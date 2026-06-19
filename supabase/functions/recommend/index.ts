@@ -1,5 +1,6 @@
 import { corsHeaders, jsonResponse } from "../_shared/cors.ts";
 
+
 type RecipientProfile = {
   walletAddress: string;
   onChain: Record<string, unknown>;
