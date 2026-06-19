@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { motion } from "framer-motion";
-import { fetchClaimData } from "../lib/api.js";
+import { claimGift, fetchClaimData } from "../lib/api.js";
 
 export default function ClaimGift() {
   const { giftId } = useParams();
   const [data, setData] = useState(null);
-  const [claimed, setClaimed] = useState(false);
+  const [revealed, setRevealed] = useState(false);
+  const [claiming, setClaiming] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -16,6 +17,19 @@ export default function ClaimGift() {
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
   }, [giftId]);
+
+  async function handleClaimGift() {
+    setClaiming(true);
+    setError("");
+    try {
+      const claimedGift = await claimGift(giftId);
+      setData(claimedGift);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setClaiming(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -36,13 +50,14 @@ export default function ClaimGift() {
 
   const { gift, recommendation, senderMessage } = data;
   const topRecommendation = recommendation.recommendations[0];
+  const isClaimed = gift.status === "claimed";
   const amountLabel =
     topRecommendation.suggestedAmountOrAsset ||
     (gift.tokenAmount && gift.tokenSymbol ? `${gift.tokenAmount} ${gift.tokenSymbol}` : `${gift.solAmount || 0} SOL`);
 
   return (
     <div className="relative mx-auto flex min-h-[70vh] max-w-2xl flex-col items-center justify-center px-6 pb-24 text-center">
-      {!claimed ? (
+      {!revealed ? (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.7 }}>
           <p className="font-mono text-xs uppercase tracking-[0.2em] text-starlightDim">A gift has arrived</p>
           <h1 className="mt-4 font-display text-3xl font-semibold text-starlight sm:text-4xl">
@@ -55,7 +70,7 @@ export default function ClaimGift() {
             <p className="mt-3 text-sm text-starlightDim">{senderMessage}</p>
           </div>
           <button
-            onClick={() => setClaimed(true)}
+            onClick={() => setRevealed(true)}
             className="mt-10 rounded-full bg-solstice-gradient px-8 py-3 font-display text-sm font-semibold text-spaceDeep shadow-glow transition hover:scale-[1.02]"
           >
             Reveal Your Gift
@@ -90,7 +105,7 @@ export default function ClaimGift() {
           <div className="mt-6 grid gap-2 text-xs text-starlightDim/70 sm:grid-cols-2">
             <p>
               Gift status:{" "}
-              <span className="text-solstice">{gift.status === "pending" ? "ready to claim" : "claimed"}</span>
+              <span className="text-solstice">{isClaimed ? "claimed" : "ready to claim"}</span>
             </p>
             <p>From: <span className="text-solstice">{gift.senderRelationship || "sender"}</span></p>
           </div>
@@ -106,8 +121,14 @@ export default function ClaimGift() {
             </a>
           )}
 
-          <button className="mt-8 w-full rounded-full bg-solstice-gradient py-3 font-display text-sm font-semibold text-spaceDeep shadow-glowSm transition hover:shadow-glow sm:w-auto sm:px-10">
-            Claim Gift
+          {error && <p className="mt-4 text-sm text-ember">{error}</p>}
+
+          <button
+            onClick={handleClaimGift}
+            disabled={isClaimed || claiming}
+            className="mt-8 w-full rounded-full bg-solstice-gradient py-3 font-display text-sm font-semibold text-spaceDeep shadow-glowSm transition hover:shadow-glow disabled:cursor-not-allowed disabled:opacity-60 sm:w-auto sm:px-10"
+          >
+            {isClaimed ? "Gift Claimed" : claiming ? "Claiming..." : "Claim Gift"}
           </button>
         </motion.div>
       )}

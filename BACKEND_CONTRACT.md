@@ -27,6 +27,9 @@ Supabase Edge Functions:
 ```env
 SUPABASE_URL=
 SUPABASE_SERVICE_ROLE_KEY=
+LLM_PROVIDER=groq
+GROQ_API_KEY=
+GROQ_MODEL=openai/gpt-oss-20b
 OPENROUTER_API_KEY=
 OPENROUTER_MODEL=anthropic/claude-sonnet-4
 APP_PUBLIC_URL=http://localhost:5173
@@ -172,7 +175,9 @@ Request:
 Backend behavior:
 
 - Load `recipient_profiles.wallet_address`.
-- Call Claude via OpenRouter.
+- Call the configured LLM provider.
+  - Free/default option: Groq with `openai/gpt-oss-20b`.
+  - Paid/Claude option: OpenRouter with `anthropic/claude-sonnet-4`.
 - Force JSON output.
 - Persist in `gift_recommendations`.
 - Ensure relationship changes materially affect gifts and reasoning.

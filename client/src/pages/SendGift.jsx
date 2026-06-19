@@ -2,6 +2,14 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import {
+  TOKEN_PROGRAM_ID,
+  createAssociatedTokenAccountInstruction,
+  createTransferInstruction,
+  getAccount,
+  getAssociatedTokenAddress,
+  getMint,
+} from "@solana/spl-token";
 import { fetchRecommendation, deliverGift, saveDemoClaimGift } from "../lib/api.js";
 import ConstellationChart from "../components/ConstellationChart.jsx";
 import RecommendationCard from "../components/RecommendationCard.jsx";
@@ -22,7 +30,7 @@ const SEND_MODES = {
 const BOBOCOIN = {
   symbol: "BOBO",
   displayName: "Bobocoin",
-  devnetMint: "BOBO_DEVNET_MINT_PENDING",
+  devnetMint: "pEGAeYmxCSChDr1g4xaUeNRi4uktKHiz5VXwpBRo136",
 };
 
 const RELATIONSHIP_PRESETS = ["Father", "Mother", "Boyfriend", "Girlfriend", "Sibling", "Close friend"];
@@ -60,6 +68,57 @@ function isValidPublicKey(value) {
   }
 }
 
+function createGiftId() {
+  return `gift_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function buildSplTokenTransferTransaction({ connection, senderPublicKey, recipientAddress, mintAddress, amount }) {
+  const mintPublicKey = new PublicKey(mintAddress);
+  const recipientPublicKey = new PublicKey(recipientAddress);
+  const mint = await getMint(connection, mintPublicKey);
+  const rawAmount = BigInt(Math.round(amount * 10 ** mint.decimals));
+
+  if (rawAmount <= 0n) {
+    throw new Error("Select a Bobocoin gift with an amount greater than 0.");
+  }
+
+  const senderTokenAccount = await getAssociatedTokenAddress(mintPublicKey, senderPublicKey);
+  const recipientTokenAccount = await getAssociatedTokenAddress(mintPublicKey, recipientPublicKey);
+
+  try {
+    await getAccount(connection, senderTokenAccount);
+  } catch {
+    throw new Error("Your connected wallet does not have a Bobocoin token account on Devnet.");
+  }
+
+  const transaction = new Transaction();
+  try {
+    await getAccount(connection, recipientTokenAccount);
+  } catch {
+    transaction.add(
+      createAssociatedTokenAccountInstruction(
+        senderPublicKey,
+        recipientTokenAccount,
+        recipientPublicKey,
+        mintPublicKey
+      )
+    );
+  }
+
+  transaction.add(
+    createTransferInstruction(
+      senderTokenAccount,
+      recipientTokenAccount,
+      senderPublicKey,
+      rawAmount,
+      [],
+      TOKEN_PROGRAM_ID
+    )
+  );
+
+  return transaction;
+}
+
 export default function SendGift() {
   const { connection } = useConnection();
   const { publicKey, sendTransaction, connected } = useWallet();
@@ -71,6 +130,7 @@ export default function SendGift() {
   const [personalMessage, setPersonalMessage] = useState("");
   const [sendMode, setSendMode] = useState(SEND_MODES.DEMO);
   const [deliveryResult, setDeliveryResult] = useState(null);
+  const [copiedClaimLink, setCopiedClaimLink] = useState(false);
   const [error, setError] = useState("");
 
   async function handleReadChart(e) {
@@ -84,6 +144,7 @@ export default function SendGift() {
       setSelectedIndex(0);
       setPersonalMessage("");
       setSendMode(SEND_MODES.DEMO);
+      setCopiedClaimLink(false);
       setStage(STAGES.RESULTS);
     } catch (err) {
       setError(err.message);
@@ -99,34 +160,56 @@ export default function SendGift() {
       const selected = data.recommendation.recommendations[selectedIndex];
       const deliveryGift = normalizeRecommendationForDelivery(selected);
       const solAmount = deliveryGift.solAmount || 0.05;
+      const giftId = createGiftId();
       let result;
 
       if (sendMode === SEND_MODES.REAL_SOL) {
-        if (selected.giftType !== "SOL") {
-          throw new Error("Real Devnet sending is available for SOL recommendations first. Use demo mode for this gift.");
+        const isSolGift = selected.giftType === "SOL";
+        const isBoboGift = deliveryGift.tokenSymbol === BOBOCOIN.symbol && deliveryGift.tokenAmount > 0;
+
+        if (!isSolGift && !isBoboGift) {
+          throw new Error("Real Devnet sending supports SOL and Bobocoin gifts. Use demo mode for this gift.");
         }
         if (!connected || !publicKey) {
-          throw new Error("Connect Phantom before sending real Devnet SOL.");
+          throw new Error("Connect Phantom before sending a real Devnet gift.");
         }
         if (!isValidPublicKey(recipientWallet)) {
-          throw new Error("Enter a valid Solana recipient wallet for real Devnet SOL sending.");
+          throw new Error("Enter a valid Solana recipient wallet for real Devnet sending.");
         }
 
-        const transaction = new Transaction().add(
-          SystemProgram.transfer({
-            fromPubkey: publicKey,
-            toPubkey: new PublicKey(recipientWallet),
-            lamports: Math.round(solAmount * LAMPORTS_PER_SOL),
-          })
-        );
+        const transaction = isBoboGift
+          ? await buildSplTokenTransferTransaction({
+              connection,
+              senderPublicKey: publicKey,
+              recipientAddress: recipientWallet,
+              mintAddress: BOBOCOIN.devnetMint,
+              amount: deliveryGift.tokenAmount,
+            })
+          : new Transaction().add(
+              SystemProgram.transfer({
+                fromPubkey: publicKey,
+                toPubkey: new PublicKey(recipientWallet),
+                lamports: Math.round(solAmount * LAMPORTS_PER_SOL),
+              })
+            );
+
         const signature = await sendTransaction(transaction, connection);
         await connection.confirmTransaction(signature, "confirmed");
-        const giftId = "demo-gift-1";
         result = {
           giftId,
           signature,
           explorerUrl: `https://explorer.solana.com/tx/${signature}?cluster=devnet`,
           claimUrl: `${window.location.origin}/claim/${giftId}`,
+          recipientAddress: recipientWallet,
+          senderAddress: publicKey.toBase58(),
+          giftType: deliveryGift.giftType,
+          title: deliveryGift.title,
+          solAmount: isSolGift ? solAmount : undefined,
+          tokenAmount: isBoboGift ? deliveryGift.tokenAmount : undefined,
+          tokenSymbol: isBoboGift ? deliveryGift.tokenSymbol : undefined,
+          tokenMint: isBoboGift ? deliveryGift.tokenMint : undefined,
+          personalMessage,
+          relationshipContext: relationship,
         };
         saveDemoClaimGift(giftId, {
           gift: {
@@ -136,7 +219,10 @@ export default function SendGift() {
             senderRelationship: relationship,
             recipientAddress: recipientWallet,
             senderAddress: publicKey.toBase58(),
-            solAmount,
+            solAmount: isSolGift ? solAmount : undefined,
+            tokenAmount: isBoboGift ? deliveryGift.tokenAmount : undefined,
+            tokenSymbol: isBoboGift ? deliveryGift.tokenSymbol : undefined,
+            tokenMint: isBoboGift ? deliveryGift.tokenMint : undefined,
             signature,
             explorerUrl: result.explorerUrl,
             status: "pending",
@@ -161,11 +247,12 @@ export default function SendGift() {
           personalMessage,
           relationshipContext: relationship,
           recommendation: selected,
-          giftId: "demo-gift-1",
+          giftId,
         });
       }
 
       setDeliveryResult(result);
+      setCopiedClaimLink(false);
       setStage(STAGES.DELIVERED);
     } catch (err) {
       setError(err.message);
@@ -187,10 +274,18 @@ export default function SendGift() {
   const selectedSolAmount = parseSolAmount(selectedRecommendation?.suggestedAmountOrAsset);
   const selectedDeliveryGift = normalizeRecommendationForDelivery(selectedRecommendation);
   const canRealSendSelectedGift =
-    selectedRecommendation?.giftType === "SOL" && selectedSolAmount > 0 && isValidPublicKey(recipientWallet);
+    ((selectedRecommendation?.giftType === "SOL" && selectedSolAmount > 0) ||
+      (selectedDeliveryGift.tokenSymbol === BOBOCOIN.symbol && selectedDeliveryGift.tokenAmount > 0)) &&
+    isValidPublicKey(recipientWallet);
   const isDemoTokenGift = sendMode === SEND_MODES.DEMO && selectedDeliveryGift.tokenSymbol === BOBOCOIN.symbol;
   const hasPersonalMessage = personalMessage.trim().length > 0;
   const approveButtonLabel = sendMode === SEND_MODES.REAL_SOL ? "Approve in Phantom & Send" : "Approve Demo Gift";
+
+  async function handleCopyClaimLink() {
+    if (!deliveryResult?.claimUrl) return;
+    await navigator.clipboard.writeText(deliveryResult.claimUrl);
+    setCopiedClaimLink(true);
+  }
 
   return (
     <div className="relative mx-auto max-w-3xl px-6 pb-24 pt-8 sm:px-10">
@@ -350,7 +445,7 @@ export default function SendGift() {
                         : "text-starlightDim hover:text-solstice"
                     }`}
                   >
-                    Devnet SOL
+                    Devnet
                   </button>
                 </div>
               </div>
@@ -366,7 +461,7 @@ export default function SendGift() {
                   </p>
                   <p className="mt-2 text-xs text-starlightDim">
                     {selectedDeliveryGift.tokenSymbol === BOBOCOIN.symbol
-                      ? `${BOBOCOIN.displayName} demo delivery. Devnet mint: ${BOBOCOIN.devnetMint}.`
+                      ? `${BOBOCOIN.displayName} Devnet token. Mint: ${BOBOCOIN.devnetMint}.`
                       : selectedRecommendation?.giftType === "SOL"
                         ? "SOL gift. Can be sent with Phantom when using a real Devnet wallet."
                         : "Demo delivery for this gift type until backend delivery support is ready."}
@@ -387,15 +482,14 @@ export default function SendGift() {
               {sendMode === SEND_MODES.REAL_SOL && (
                 <p className={`mt-3 text-xs ${canRealSendSelectedGift ? "text-solstice" : "text-ember"}`}>
                   {canRealSendSelectedGift
-                    ? "Ready for a real Phantom-approved Devnet SOL transfer."
-                    : "Real Devnet mode requires a selected SOL gift and a valid Solana recipient wallet."}
+                    ? "Ready for a real Phantom-approved Devnet transfer."
+                    : "Real Devnet mode requires a selected SOL or Bobocoin gift and a valid Solana recipient wallet."}
                 </p>
               )}
 
               {isDemoTokenGift && (
                 <p className="mt-3 text-xs text-solstice">
-                  Bobocoin is ready in demo approval mode. Once the devnet mint exists, this payload can be routed to
-                  the backend SPL token transfer.
+                  Bobocoin is using your Devnet mint in the demo claim payload.
                 </p>
               )}
             </div>
@@ -484,6 +578,16 @@ export default function SendGift() {
             >
               View on Solana Explorer
             </a>
+            <div className="mt-5 rounded-xl border border-violet/30 bg-spaceDeep/30 p-4 text-left">
+              <p className="text-xs uppercase tracking-[0.18em] text-starlightDim">Claim link</p>
+              <p className="mt-2 break-all font-mono text-xs text-starlight">{deliveryResult.claimUrl}</p>
+              <button
+                onClick={handleCopyClaimLink}
+                className="mt-3 rounded-full border border-violet/60 px-4 py-2 font-display text-xs font-semibold text-starlight transition hover:border-solstice hover:text-solstice"
+              >
+                {copiedClaimLink ? "Copied" : "Copy Claim Link"}
+              </button>
+            </div>
             <div className="mt-6">
               <a
                 href={deliveryResult.claimUrl}

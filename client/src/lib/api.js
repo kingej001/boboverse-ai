@@ -79,6 +79,34 @@ export function saveDemoClaimGift(giftId, claimPayload) {
   return saveGiftToStorage(giftId, claimPayload);
 }
 
+export async function claimGift(giftId) {
+  if (USE_MOCKS) {
+    await delay(500);
+    const savedGift = getGiftFromStorage(giftId);
+    if (!savedGift) {
+      throw new Error("Gift not found.");
+    }
+
+    const claimedGift = {
+      ...savedGift,
+      gift: {
+        ...savedGift.gift,
+        status: "claimed",
+        claimedAt: new Date().toISOString(),
+      },
+    };
+    saveGiftToStorage(giftId, claimedGift);
+    return claimedGift;
+  }
+
+  const res = await fetch(`${SUPABASE_URL}/functions/v1/claim/${giftId}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+  });
+  if (!res.ok) throw new Error("Failed to claim gift");
+  return res.json();
+}
+
 function buildRecommendation(relationshipContext) {
   const rel = relationshipContext.toLowerCase();
   const isProtective = /father|mother|parent|dad|mom|guardian/.test(rel);

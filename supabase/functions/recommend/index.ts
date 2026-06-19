@@ -24,7 +24,35 @@ type RecommendationPayload = {
 };
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL = "anthropic/claude-sonnet-4";
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4";
+const DEFAULT_GROQ_MODEL = "openai/gpt-oss-20b";
+
+const recommendationJsonSchema = {
+  type: "object",
+  properties: {
+    relationshipWeighting: { type: "string" },
+    recommendations: {
+      type: "array",
+      minItems: 3,
+      maxItems: 3,
+      items: {
+        type: "object",
+        properties: {
+          giftType: { type: "string", enum: ["SOL", "SPL_TOKEN", "NFT", "EXPERIENCE"] },
+          title: { type: "string" },
+          reasoning: { type: "string" },
+          suggestedAmountOrAsset: { type: "string" },
+        },
+        required: ["giftType", "title", "reasoning", "suggestedAmountOrAsset"],
+        additionalProperties: false,
+      },
+    },
+    claimMessage: { type: "string" },
+  },
+  required: ["relationshipWeighting", "recommendations", "claimMessage"],
+  additionalProperties: false,
+};
 
 function requiredEnv(name: string) {
   const value = Deno.env.get(name);
@@ -156,7 +184,7 @@ function parseModelJson(content: string): RecommendationPayload {
 
 async function callOpenRouter(profile: RecipientProfile, relationshipContext: string) {
   const openRouterKey = requiredEnv("OPENROUTER_API_KEY");
-  const model = Deno.env.get("OPENROUTER_MODEL") || DEFAULT_MODEL;
+  const model = Deno.env.get("OPENROUTER_MODEL") || DEFAULT_OPENROUTER_MODEL;
 
   const res = await fetch(OPENROUTER_URL, {
     method: "POST",
@@ -187,9 +215,67 @@ async function callOpenRouter(profile: RecipientProfile, relationshipContext: st
   if (!content) throw new Error("OpenRouter response did not include message content.");
 
   return {
+    provider: "openrouter",
     model: completion.model || model,
     recommendation: parseModelJson(content),
   };
+}
+
+async function callGroq(profile: RecipientProfile, relationshipContext: string) {
+  const groqKey = requiredEnv("GROQ_API_KEY");
+  const model = Deno.env.get("GROQ_MODEL") || DEFAULT_GROQ_MODEL;
+
+  const res = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${groqKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: buildSystemPrompt() },
+        { role: "user", content: buildUserPrompt(profile, relationshipContext) },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "giftmind_recommendation",
+          schema: recommendationJsonSchema,
+        },
+      },
+      temperature: 0.7,
+      max_completion_tokens: 1200,
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Groq request failed: ${await res.text()}`);
+  }
+
+  const completion = await res.json();
+  const content = completion?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("Groq response did not include message content.");
+
+  return {
+    provider: "groq",
+    model: completion.model || model,
+    recommendation: parseModelJson(content),
+  };
+}
+
+async function callRecommendationModel(profile: RecipientProfile, relationshipContext: string) {
+  const provider = (Deno.env.get("LLM_PROVIDER") || "groq").toLowerCase();
+
+  if (provider === "openrouter") {
+    return callOpenRouter(profile, relationshipContext);
+  }
+
+  if (provider === "groq") {
+    return callGroq(profile, relationshipContext);
+  }
+
+  throw new Error(`Unsupported LLM_PROVIDER: ${provider}`);
 }
 
 async function persistRecommendation(
@@ -197,7 +283,8 @@ async function persistRecommendation(
   relationshipContext: string,
   profile: RecipientProfile,
   recommendation: RecommendationPayload,
-  model: string
+  model: string,
+  provider: string
 ) {
   const res = await supabaseRequest("gift_recommendations", {
     method: "POST",
@@ -207,7 +294,7 @@ async function persistRecommendation(
       profile_snapshot: profile,
       recommendation,
       model,
-      provider: "openrouter",
+      provider,
     }),
   });
 
@@ -228,8 +315,8 @@ Deno.serve(async (req) => {
   try {
     const { walletAddress, relationshipContext } = await readRequest(req);
     const profile = await loadProfile(walletAddress);
-    const { model, recommendation } = await callOpenRouter(profile, relationshipContext);
-    await persistRecommendation(walletAddress, relationshipContext, profile, recommendation, model);
+    const { provider, model, recommendation } = await callRecommendationModel(profile, relationshipContext);
+    await persistRecommendation(walletAddress, relationshipContext, profile, recommendation, model, provider);
 
     return jsonResponse({ profile, recommendation });
   } catch (err) {
