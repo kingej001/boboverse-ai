@@ -1,4 +1,4 @@
-import { TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction, createTransferInstruction, getAccount, getAssociatedTokenAddress, getMint, } from "@solana/spl-token";
+import { TOKEN_2022_PROGRAM_ID, TOKEN_PROGRAM_ID, createAssociatedTokenAccountInstruction, createTransferCheckedInstruction, getAccount, getAssociatedTokenAddress, getMint, } from "@solana/spl-token";
 import { LAMPORTS_PER_SOL, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -60,7 +60,9 @@ function parseSolAmount(value) {
 }
 
 function parseTokenAmount(value, symbol) {
-  const match = String(value || "").match(new RegExp(`(\\d+(\\.\\d+)?)\\s*${symbol}`, "i"));
+  const match = String(value || "").match(
+    new RegExp(`(\\d+(\\.\\d+)?)\\s*(?:${symbol}|${BOBOCOIN.displayName})`, "i")
+  );
   return match ? Number(match[1]) : 0;
 }
 
@@ -68,14 +70,17 @@ function normalizeRecommendationForDelivery(recommendation) {
   const suggestedAmountOrAsset = recommendation?.suggestedAmountOrAsset || "";
   const solAmount = parseSolAmount(suggestedAmountOrAsset);
   const boboAmount = parseTokenAmount(suggestedAmountOrAsset, BOBOCOIN.symbol);
+  const isBoboGift =
+    recommendation?.giftType === "SPL_TOKEN" &&
+    /bobo|bobocoin/i.test(`${recommendation?.title || ""} ${suggestedAmountOrAsset}`);
 
   return {
     giftType: recommendation?.giftType || "SOL",
     title: recommendation?.title || "GiftMind Gift",
     solAmount,
-    tokenAmount: boboAmount,
-    tokenSymbol: boboAmount > 0 ? BOBOCOIN.symbol : undefined,
-    tokenMint: boboAmount > 0 ? BOBOCOIN.devnetMint : undefined,
+    tokenAmount: isBoboGift ? boboAmount : 0,
+    tokenSymbol: isBoboGift && boboAmount > 0 ? BOBOCOIN.symbol : undefined,
+    tokenMint: isBoboGift && boboAmount > 0 ? BOBOCOIN.devnetMint : undefined,
   };
 }
 
@@ -91,47 +96,65 @@ function createGiftId() {
   return `gift_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function tokenAmountToRawAmount(amount, decimals) {
+  const [wholePart, decimalPart = ""] = String(amount).split(".");
+  const paddedDecimalPart = decimalPart.padEnd(decimals, "0").slice(0, decimals);
+  return BigInt(`${wholePart || "0"}${paddedDecimalPart || "".padEnd(decimals, "0")}`);
+}
+
 async function buildSplTokenTransferTransaction({ connection, senderPublicKey, recipientAddress, mintAddress, amount }) {
   const mintPublicKey = new PublicKey(mintAddress);
   const recipientPublicKey = new PublicKey(recipientAddress);
-  const mint = await getMint(connection, mintPublicKey);
-  const rawAmount = BigInt(Math.round(amount * 10 ** mint.decimals));
+  const mintAccountInfo = await connection.getAccountInfo(mintPublicKey);
+  if (!mintAccountInfo) {
+    throw new Error("Bobocoin mint was not found on Devnet.");
+  }
+  const tokenProgramId = mintAccountInfo?.owner?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const mint = await getMint(connection, mintPublicKey, undefined, tokenProgramId);
+  const rawAmount = tokenAmountToRawAmount(amount, mint.decimals);
 
   if (rawAmount <= 0n) {
     throw new Error("Select a Bobocoin gift with an amount greater than 0.");
   }
 
-  const senderTokenAccount = await getAssociatedTokenAddress(mintPublicKey, senderPublicKey);
-  const recipientTokenAccount = await getAssociatedTokenAddress(mintPublicKey, recipientPublicKey);
+  const senderTokenAccount = await getAssociatedTokenAddress(mintPublicKey, senderPublicKey, false, tokenProgramId);
+  const recipientTokenAccount = await getAssociatedTokenAddress(mintPublicKey, recipientPublicKey, false, tokenProgramId);
 
+  let senderAccount;
   try {
-    await getAccount(connection, senderTokenAccount);
+    senderAccount = await getAccount(connection, senderTokenAccount, undefined, tokenProgramId);
   } catch {
     throw new Error("Your connected wallet does not have a Bobocoin token account on Devnet.");
+  }
+  if (senderAccount.amount < rawAmount) {
+    throw new Error(`Your Phantom wallet does not have enough Bobocoin to send ${amount} ${BOBOCOIN.symbol}.`);
   }
 
   const transaction = new Transaction();
   try {
-    await getAccount(connection, recipientTokenAccount);
+    await getAccount(connection, recipientTokenAccount, undefined, tokenProgramId);
   } catch {
     transaction.add(
       createAssociatedTokenAccountInstruction(
         senderPublicKey,
         recipientTokenAccount,
         recipientPublicKey,
-        mintPublicKey
+        mintPublicKey,
+        tokenProgramId
       )
     );
   }
 
   transaction.add(
-    createTransferInstruction(
+    createTransferCheckedInstruction(
       senderTokenAccount,
+      mintPublicKey,
       recipientTokenAccount,
       senderPublicKey,
       rawAmount,
+      mint.decimals,
       [],
-      TOKEN_PROGRAM_ID
+      tokenProgramId
     )
   );
 
@@ -306,13 +329,12 @@ export default function SendGift() {
       const selected = data.recommendation.recommendations[selectedIndex];
       const deliveryGift = normalizeRecommendationForDelivery(selected);
       const solAmount = deliveryGift.solAmount || 0.05;
+      const isSolGift = selected.giftType === "SOL";
+      const isBoboGift = deliveryGift.tokenSymbol === BOBOCOIN.symbol && deliveryGift.tokenAmount > 0;
       const giftId = createGiftId();
       let result;
 
-      if (sendMode === SEND_MODES.REAL_SOL) {
-        const isSolGift = selected.giftType === "SOL";
-        const isBoboGift = deliveryGift.tokenSymbol === BOBOCOIN.symbol && deliveryGift.tokenAmount > 0;
-
+      if (sendMode === SEND_MODES.REAL_SOL || isBoboGift) {
         if (!isSolGift && !isBoboGift) {
           throw new Error("Real Devnet sending supports SOL and Bobocoin gifts. Use demo mode for this gift.");
         }
@@ -419,13 +441,22 @@ export default function SendGift() {
   const selectedRecommendation = data?.recommendation.recommendations[selectedIndex];
   const selectedSolAmount = parseSolAmount(selectedRecommendation?.suggestedAmountOrAsset);
   const selectedDeliveryGift = normalizeRecommendationForDelivery(selectedRecommendation);
+  const selectedIsBoboGift = selectedDeliveryGift.tokenSymbol === BOBOCOIN.symbol && selectedDeliveryGift.tokenAmount > 0;
+  const selectedUsesRealPhantom = sendMode === SEND_MODES.REAL_SOL || selectedIsBoboGift;
   const canRealSendSelectedGift =
     ((selectedRecommendation?.giftType === "SOL" && selectedSolAmount > 0) ||
-      (selectedDeliveryGift.tokenSymbol === BOBOCOIN.symbol && selectedDeliveryGift.tokenAmount > 0)) &&
+      selectedIsBoboGift) &&
+    connected &&
+    publicKey &&
     isValidPublicKey(recipientWallet);
-  const isDemoTokenGift = sendMode === SEND_MODES.DEMO && selectedDeliveryGift.tokenSymbol === BOBOCOIN.symbol;
   const hasPersonalMessage = personalMessage.trim().length > 0;
-  const approveButtonLabel = sendMode === SEND_MODES.REAL_SOL ? "Approve in Phantom & Send" : "Approve Demo Gift";
+  const approveButtonLabel = selectedUsesRealPhantom ? "Approve in Phantom & Send" : "Approve Demo Gift";
+
+  useEffect(() => {
+    if (selectedIsBoboGift && sendMode !== SEND_MODES.REAL_SOL) {
+      setSendMode(SEND_MODES.REAL_SOL);
+    }
+  }, [selectedIsBoboGift, sendMode]);
 
   async function handleCopyClaimLink() {
     if (!deliveryResult?.claimUrl) return;
@@ -627,9 +658,16 @@ export default function SendGift() {
                   <div className="flex rounded-full border border-violet/40 p-1">
                     <button
                       type="button"
-                      onClick={() => setSendMode(SEND_MODES.DEMO)}
+                      onClick={() => {
+                        if (!selectedIsBoboGift) setSendMode(SEND_MODES.DEMO);
+                      }}
+                      disabled={selectedIsBoboGift}
                       className={`rounded-full px-3 py-1.5 text-xs transition ${
-                        sendMode === SEND_MODES.DEMO ? "bg-solstice text-spaceDeep" : "text-starlightDim hover:text-solstice"
+                        sendMode === SEND_MODES.DEMO && !selectedIsBoboGift
+                          ? "bg-solstice text-spaceDeep"
+                          : selectedIsBoboGift
+                            ? "cursor-not-allowed text-starlightDim/40"
+                            : "text-starlightDim hover:text-solstice"
                       }`}
                     >
                       Demo
@@ -676,16 +714,11 @@ export default function SendGift() {
                       : "Demo delivery for this gift type until backend delivery support is ready."}
                 </p>
 
-                {sendMode === SEND_MODES.REAL_SOL && (
+                {selectedUsesRealPhantom && (
                   <p className={`mt-3 text-xs ${canRealSendSelectedGift ? "text-solstice" : "text-ember"}`}>
                     {canRealSendSelectedGift
-                      ? "Ready for a real Phantom-approved Devnet transfer."
-                      : "Real Devnet mode requires a selected SOL or Bobocoin gift and a valid Solana recipient wallet."}
-                  </p>
-                )}
-                {isDemoTokenGift && (
-                  <p className="mt-3 text-xs text-solstice">
-                    Bobocoin is using your Devnet mint in the demo claim payload.
+                      ? "Ready to send Bobocoin from your Phantom wallet to the recipient wallet."
+                      : "Bobocoin requires connected Phantom and a valid Solana recipient wallet."}
                   </p>
                 )}
               </div>
@@ -734,7 +767,7 @@ export default function SendGift() {
 
               <button
                 onClick={handleApproveAndSend}
-                disabled={!hasPersonalMessage || (sendMode === SEND_MODES.REAL_SOL && !canRealSendSelectedGift)}
+                disabled={!hasPersonalMessage || (selectedUsesRealPhantom && !canRealSendSelectedGift)}
                 className="mt-6 w-full rounded-full bg-solstice-gradient py-3.5 font-display text-sm font-semibold text-spaceDeep shadow-glowSm transition hover:shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {approveButtonLabel}
@@ -754,7 +787,7 @@ export default function SendGift() {
                   style={{ boxShadow: "0 0 16px 4px rgba(255,184,77,0.8)" }}
                 />
                 <ScanSequence
-                  lines={sendMode === SEND_MODES.REAL_SOL ? LAUNCH_LINES_REAL : LAUNCH_LINES_DEMO}
+                  lines={selectedUsesRealPhantom ? LAUNCH_LINES_REAL : LAUNCH_LINES_DEMO}
                   accent="ember"
                 />
               </div>
@@ -803,7 +836,6 @@ export default function SendGift() {
                 </div>
 
                 <p className="mt-4 text-sm text-starlightDim">{deliveryResult.personalMessage || personalMessage}</p>
-
                 <div className="mt-4 rounded-xl border border-violet/20 bg-spaceDeep/30 p-3">
                   <p className="text-[10px] uppercase tracking-[0.16em] text-starlightDim">Transaction</p>
                   <p className="mt-2 break-all font-mono text-xs text-starlightDim">{deliveryResult.signature}</p>

@@ -164,11 +164,11 @@ function buildRecommendation(relationshipContext) {
           suggestedAmountOrAsset: "0.04 SOL",
         },
         {
-          giftType: "EXPERIENCE",
-          title: "Shared Gallery Drop",
+          giftType: "SPL_TOKEN",
+          title: "Bobocoin Date Night Drop",
           reasoning:
-            "Their aesthetic and culture signals point toward an experience that becomes a shared memory, not just an asset transfer.",
-          suggestedAmountOrAsset: "Invite to a curated digital art drop",
+            "A playful Bobocoin gift keeps the gesture real on Devnet while still feeling light, personal, and easy to pair with a romantic message.",
+          suggestedAmountOrAsset: "20 BOBO",
         },
       ],
       claimMessage: "He picked this because it matches your collection and your taste. He was paying attention.",

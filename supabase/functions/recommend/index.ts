@@ -150,8 +150,9 @@ function buildUserPrompt(profile: RecipientProfile, relationshipContext: string)
     },
     requirements: [
       "Return exactly 3 recommendations, ranked best first.",
-      "At least one recommendation must be deliverable as SOL or SPL_TOKEN on Devnet.",
-      "If recommending SPL_TOKEN, use Bobocoin with symbol BOBO.",
+      "Exactly one recommendation must be SPL_TOKEN Bobocoin with symbol BOBO.",
+      "The Bobocoin recommendation must include a numeric amount in suggestedAmountOrAsset, for example 20 BOBO.",
+      "At least one other recommendation must be deliverable as SOL on Devnet.",
       "Reasoning must explicitly mention the sender relationship.",
       "Do not invent private facts not present in the profile.",
     ],

@@ -42,6 +42,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
     );
 
     // 🔥 fake signature for MVP (frontend already sends Phantom tx)
+    // fake signature for MVP (frontend already sends Phantom tx)
     const signature = crypto.randomUUID();
 
     const explorerUrl = `https://explorer.solana.com/tx/${signature}?cluster=devnet`;

@@ -29,7 +29,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       Deno.env.get("SERVICE_ROLE_KEY")!
     );
 
-    // 🔥 GET GIFT
+    // GET GIFT
     if (req.method === "GET") {
       const { data: gift, error } = await supabase
         .from("gifts")
@@ -66,7 +66,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       );
     }
 
-    // 🔥 CLAIM GIFT
+    // CLAIM GIFT
     if (req.method === "POST") {
       const { data: gift, error } = await supabase
         .from("gifts")
@@ -107,7 +107,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         JSON.stringify({
           giftId: gift.gift_id,
           status: "claimed",
-          message: "Gift successfully claimed 🎁",
+          message: "Gift successfully claimed",
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
